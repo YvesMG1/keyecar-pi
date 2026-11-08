@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "keyecar"
+version = "1.0.0"
+description = "End-to-end imitation-learning driving for a Raspberry Pi 5 RC car: teleop data collection, human-in-the-loop DAgger, and on-device ONNX inference."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+# Floors match Raspberry Pi OS Bookworm's apt packages (python3-numpy 1.24, python3-pil 9.4), so a
+# --system-site-packages venv on the Pi keeps the numpy that picamera2/simplejpeg were built against.
+dependencies = [
+    "numpy>=1.24",
+    "pillow>=9.4",
+]
+
+[project.optional-dependencies]
+# Runtime on the Raspberry Pi. picamera2 and RPi.GPIO come from Raspberry Pi OS:
+#   sudo apt install -y python3-picamera2 python3-rpi.gpio
+pi = [
+    "onnxruntime>=1.17",
+    "pygame>=2.5",
+]
+# Off-board training, evaluation, and export.
+train = [
+    "torch>=2.6",
+    "torchvision>=0.21",
+    "pandas>=2.1",
+    "tqdm>=4.66",
+    "onnx>=1.16",
+    "onnxruntime>=1.17",
+    "onnxscript>=0.1",
+]
+dev = [
+    "ruff==0.17.4",  # same version as CI, so local formatting matches the check
+]
+
+[project.scripts]
+keyecar-teleop = "keyecar.car.teleop:main"
+keyecar-drive = "keyecar.car.drive:main"
+keyecar-ultrasonic-bench = "keyecar.car.ultrasonic_bench:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["keyecar"]
