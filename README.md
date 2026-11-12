@@ -64,6 +64,8 @@ This is a first version. The main open points are on the learning side.
 - **Short memory.** The history model sees only 3 frames (0.1 s), merged at the input. Encoding each
   frame and combining them over time (e.g. a small GRU or transformer) could use more context.
 - **Copying the previous command.** Feeding the last command back in invites the model to repeat it.
+  This is known as causal confusion ([de Haan et al., 2019](https://arxiv.org/abs/1905.11979)) or the
+  copycat problem ([Wen et al., 2020](https://arxiv.org/abs/2010.14876)).
   Measured speed and turn rate from sensors would be a better input.
 
 **Outputs and loss**
