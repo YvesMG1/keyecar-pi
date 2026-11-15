@@ -33,9 +33,13 @@ def variant_from_checkpoint(state: dict) -> PolicyVariant:
 def model_from_checkpoint(state: dict) -> RegressionPolicy:
     """Build the policy (without downloading ImageNet weights) and load the trained weights."""
     variant = variant_from_checkpoint(state)
+    # Checkpoints from before these options existed used the previous command and regressed steering.
+    model_config = state.get("metadata", {}).get("model_config", {})
     model = RegressionPolicy(
         input_channels=variant.input_channels,
         condition_history_length=variant.condition_history_length,
+        use_motor_state=bool(model_config.get("use_motor_state", True)),
+        steering_bins=int(model_config.get("steering_bins", 0)),
         pretrained=False,
     )
     model.load_state_dict(state["state_dict"])
