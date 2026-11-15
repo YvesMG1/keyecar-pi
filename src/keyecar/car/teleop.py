@@ -24,8 +24,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--layout", default="", help="layout id stored in metadata.json")
     parser.add_argument("--phase", default="seed", help="collection phase stored in metadata.json")
     parser.add_argument("--lighting", default="", help="lighting note stored in metadata.json")
-    # The demonstrations were recorded at 480x320, 20 fps.
-    cli.add_camera_args(parser, width=480, height=320, fps=20.0)
+    # The same camera mode as keyecar-drive, so demonstrations look like what the policy sees
+    # on the car. (Most of the shipped demonstrations were still recorded at 480x320.)
+    cli.add_camera_args(parser, width=640, height=480, fps=20.0)
     cli.add_safety_args(parser)
     return parser
 

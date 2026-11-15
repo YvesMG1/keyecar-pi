@@ -170,6 +170,9 @@ def run_playstation_teleop(
             )
             controls.drive(decision, tick)
             if recorder is not None:
+                # Record every camera frame. The capture blocks until the next frame, so the
+                # camera paces the loop, as in the autonomy loop. Sleeping here as well, and
+                # recording only once a frame interval has passed, lost every third frame.
                 recorder.maybe_capture(
                     human_command=event.command,
                     executed_command=decision.command,
@@ -181,8 +184,10 @@ def run_playstation_teleop(
                     ultrasonic_reading=tick.ultrasonic,
                     label_source="human",
                     training_eligible=not event.stop_requested and not tick.safety_stop,
+                    force=True,
                 )
-            time.sleep(settings.teleop.loop_delay_s)
+            else:
+                time.sleep(settings.teleop.loop_delay_s)
 
 
 def run_autonomy_loop(
