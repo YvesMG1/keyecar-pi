@@ -14,5 +14,18 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install ruff==0.17.4
-      - run: ruff check src
-      - run: ruff format --check src
+      - run: ruff check src tests
+      - run: ruff format --check src tests
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install -e . pytest
+      - run: pytest
