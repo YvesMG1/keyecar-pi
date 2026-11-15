@@ -1,24 +1,28 @@
 """Evaluate a trained checkpoint on the validation sessions.
 
-    python -m keyecar.training.eval runs/rgb_history_dagger_v4/best.pt
-    python -m keyecar.training.eval runs/rgb_history_dagger_v4/best.pt --videos runs/eval_videos
+    python -m keyecar.training.eval runs/rgb_history_dagger_v5/best.pt
+    python -m keyecar.training.eval runs/rgb_history_dagger_v5/best.pt --videos runs/eval_videos
 
-Writes, next to the checkpoint:
+Writes, next to the checkpoint (or to ``--out-dir``):
 
 * ``eval.json`` and ``eval_buckets.csv``: command errors overall and per route
   condition;
-* ``robustness_metrics.json``: steering errors by target bucket with the
-  recorded motor state, and how much predictions shift when the motor state
-  is set to zero or fed back from the model's own predictions.
+* ``robustness_metrics.json``: everything that asks whether the model reads
+  the image or copies its previous-command input.
 
-Each validation frame is predicted in three motor-state modes. ``recorded``
-(from the recording) is the only one with a ground truth; ``zero`` and
-``recursive`` (the model's previous prediction, frame by frame through each
-session, an open-loop stand-in for driving) are only compared with the
-``recorded`` prediction.
+Each validation frame is predicted in three motor-state modes: ``recorded``
+(the human's previous command, from the recording), ``zero``, and
+``recursive`` (the model's own previous prediction, frame by frame through
+each session, as on the car). All three are scored against the human label,
+next to a baseline that only copies the previous command: overall, on the
+frames where the human command changes, as the lag behind the human's
+steering steps, and as the summed steering over each of the human's turns.
+This is open loop. The images come from the human's drive, so
+it can show that a model is bad, not that it drives well.
 
 Optionally it also scores the reviewed correction targets (``--correction-manifest``
-and ``--correction-split``) and renders one annotated MP4 per validation session.
+and ``--correction-split``; use ``val`` for held-out sessions) and renders one
+annotated MP4 per validation session.
 """
 
 from __future__ import annotations
@@ -26,20 +30,26 @@ from __future__ import annotations
 import argparse
 import csv
 from collections import defaultdict
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 
 import numpy as np
 import torch
 from PIL import Image
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from keyecar.car.control import Condition
 from keyecar.cli import add_checkpoint, add_keep_frames, add_recordings_root, make_parser
 
 from .checkpoint import load_checkpoint, model_from_checkpoint, variant_from_checkpoint
-from .dagger import EXACT_SOURCE, PSEUDO_SOURCE, CorrectionWindowDataset, load_accepted_correction_sessions
+from .dagger import (
+    EXACT_SOURCE,
+    PSEUDO_SOURCE,
+    CorrectionTarget,
+    CorrectionWindowDataset,
+    load_accepted_correction_sessions,
+)
 from .dataset import KeyecarSessionDataset, discover_session_split
 from .files import sha256_file, write_json
 from .metrics import (
@@ -49,6 +59,7 @@ from .metrics import (
     command_error_metrics,
     format_metric,
     intervention_residual_closure_metrics,
+    sequence_breaks,
 )
 from .model import RegressionPolicy, batch_inputs, default_device, forward_batch
 from .tools import drawing
@@ -61,7 +72,7 @@ from .tools.video import encode_mp4, frames_directory, infer_fps_from_monotonic_
 
 def evaluate_policy_motor_modes(
     model: RegressionPolicy,
-    dataset: Dataset,
+    dataset: KeyecarSessionDataset,
     *,
     device: torch.device,
     batch_size: int = 64,
@@ -70,14 +81,23 @@ def evaluate_policy_motor_modes(
     """Predict every sample with recorded, zero, and recursive motor state.
 
     The dataset must be in time order within each session: in recursive mode
-    each prediction becomes the next sample's motor state.
+    each prediction becomes the next sample's motor state. That state starts
+    again from zero wherever frames are missing. Stops are not samples, and
+    after a stop the previous command is zero on the car too.
     """
     model.to(device).eval()
+    frames = dataset.df
+    session_column = frames["session_id"].to_numpy()
+    frame_index = frames["frame_index"].to_numpy()
+    timestamps_ns = frames["timestamp_monotonic_ns"].to_numpy(dtype=np.int64)
+    missing_frames = sequence_breaks(session_column, frame_index)
+
     predictions: dict[str, list[np.ndarray]] = defaultdict(list)
     targets: list[np.ndarray] = []
+    previous: list[np.ndarray] = []
     session_ids: list[str] = []
     recursive_state = torch.zeros(1, 2, device=device)
-    previous_session = None
+    sample = 0
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
     with torch.no_grad():
         for batch in tqdm(loader, leave=False, desc="robustness"):
@@ -89,11 +109,11 @@ def evaluate_policy_motor_modes(
             )
             zero_state = torch.zeros_like(recorded_state)
             predictions["zero"].append(model.head(features, zero_state, condition, history).cpu().numpy())
-            for i, session_id in enumerate(batch["session_id"]):
-                if session_id != previous_session:
+            for i in range(len(batch["session_id"])):
+                if missing_frames[sample]:
                     # A new tensor, not zero_(): the stored numpy outputs share memory with the old one.
                     recursive_state = torch.zeros(1, 2, device=device)
-                    previous_session = session_id
+                sample += 1
                 row = slice(i, i + 1)
                 recursive_state = model.head(
                     features[row], recursive_state, condition[row], None if history is None else history[row]
@@ -101,14 +121,35 @@ def evaluate_policy_motor_modes(
                 predictions["recursive"].append(recursive_state.cpu().numpy())
 
             targets.append(batch["target_command"].numpy())
+            previous.append(batch["motor_state"].numpy())
             session_ids.extend(batch["session_id"])
     return {
         "predictions": {
             mode: np.concatenate(values).astype(np.float64) for mode, values in predictions.items()
         },
         "targets": np.concatenate(targets).astype(np.float64),
+        "previous": np.concatenate(previous).astype(np.float64),
         "session_ids": session_ids,
+        "timestamps_ns": timestamps_ns,
+        "conditions": frames["condition"].to_numpy(dtype=np.int64),
+        # For the turn-in events and the turns a late frame also ends a run of frames.
+        "breaks": sequence_breaks(
+            session_column, frame_index, timestamps_ns, max_gap_ns=dataset.history_max_gap_ns
+        ),
     }
+
+
+def first_human_frames(targets: Sequence[CorrectionTarget]) -> list[bool]:
+    """Mark the earliest human frame of each takeover."""
+    earliest: dict[str, int] = {}
+    for index, target in enumerate(targets):
+        if target.region != "human":
+            continue
+        best = earliest.get(target.intervention_key)
+        if best is None or target.base_index < targets[best].base_index:
+            earliest[target.intervention_key] = index
+    marked = set(earliest.values())
+    return [index in marked for index in range(len(targets))]
 
 
 def evaluate_intervention_residual_datasets(
@@ -121,7 +162,7 @@ def evaluate_intervention_residual_datasets(
 ) -> dict[str, object]:
     """Residual closure of the exact-human and pseudo-window correction targets."""
     model.to(device).eval()
-    baseline, target, prediction, regions = [], [], [], []
+    baseline, target, prediction, regions, first_human = [], [], [], [], []
     with torch.no_grad():
         for dataset in datasets:
             for batch in DataLoader(dataset, batch_size=batch_size, shuffle=False):
@@ -129,8 +170,14 @@ def evaluate_intervention_residual_datasets(
                 target.extend(batch["target_command"][:, 1].tolist())
             baseline.extend(t.baseline_steering for t in dataset.targets)
             regions.extend(t.region for t in dataset.targets)
+            first_human.extend(first_human_frames(dataset.targets))
     return intervention_residual_closure_metrics(
-        np.asarray(baseline), np.asarray(target), np.asarray(prediction), regions=regions, split=split
+        np.asarray(baseline),
+        np.asarray(target),
+        np.asarray(prediction),
+        regions=regions,
+        split=split,
+        first_human=np.asarray(first_human, dtype=bool),
     )
 
 
@@ -255,11 +302,40 @@ def print_robustness(payload: dict[str, object]) -> None:
             f"collapse={format_metric(metrics['steering_collapse_rate'])} "
             f"drift_growth={format_metric(metrics['steering_drift_growth'])}"
         )
+    copy = payload["baselines"]["copy_previous"]
+    print(
+        "\nAgainst the human label, by motor-state input (open loop). "
+        f"Copying the previous command: steer_mae={format_metric(copy['overall']['steering_mae'])} "
+        f"strong={format_metric(copy['buckets']['strong']['steering_mae'])}"
+    )
+    for mode, metrics in payload["accuracy_by_motor_mode"]["modes"].items():
+        changed, turn_in, turns = metrics["change_slices"]["changed"], metrics["turn_in"], metrics["turns"]
+        print(
+            f"[{mode}] steer_mae={format_metric(metrics['overall']['steering_mae'])} "
+            f"skill_vs_copy={format_metric(metrics['steering_skill_vs_copy'])} | "
+            f"changed frames n={changed['num_samples']} "
+            f"steer_mae={format_metric(changed['steering_mae'])} "
+            f"(copy {format_metric(changed['copy_steering_mae'])}) "
+            f"step_ratio={format_metric(changed['median_step_ratio'])} | "
+            f"turn-in events={turn_in['num_events']} "
+            f"lag_ms={format_metric(turn_in['median_lag_ms'])} "
+            f"missed={format_metric(turn_in['missed_share'])} "
+            f"peak_ratio={format_metric(turn_in['median_peak_ratio'])} | "
+            f"whole turns n={turns['num_turns']} "
+            f"steering_ratio={format_metric(turns['median_steering_ratio'])} "
+            f"followed={format_metric(turns['followed_share'])} "
+            f"understeered={format_metric(turns['understeered_share'])}"
+        )
     residual = payload["residual_closure"]
     if residual is not None:
+        first = residual["first_human_frame"]
         print(
             f"[residual_closure:{residual['split']}] samples={residual['overall']['num_samples']} "
-            f"mean={format_metric(residual['overall']['mean_residual_closure'])}"
+            f"mean={format_metric(residual['overall']['mean_residual_closure'])} | "
+            f"first human frame of each takeover n={first['num_samples']} "
+            f"clipped_mean={format_metric(first['mean_clipped_residual_closure'])} "
+            f"moved_toward={format_metric(first['share_moved_toward_target'])} "
+            f"closed_half={format_metric(first['share_closed_at_least_half'])}"
         )
 
 
@@ -279,6 +355,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--all-frames", action="store_true", help="evaluate every frame, not only training targets"
     )
     parser.add_argument("--no-robustness", action="store_true", help="skip the motor-state checks")
+    parser.add_argument(
+        "--out-dir", type=Path, help="write the results here (default: next to the checkpoint)"
+    )
 
     corrections = parser.add_argument_group("correction targets (optional, give both)")
     corrections.add_argument("--correction-manifest", type=Path, help="reviewed correction manifest to score")
@@ -340,7 +419,8 @@ def main(argv: list[str] | None = None) -> None:
             f"steer_mae={metrics['steering_mae']:.3f} turn_acc={metrics['turn_accuracy']:.3f}"
         )
 
-    out_dir = args.checkpoint.parent
+    out_dir = args.out_dir or args.checkpoint.parent
+    out_dir.mkdir(parents=True, exist_ok=True)
     robustness = None
     if not args.no_robustness:
         residual_closure = None
@@ -359,7 +439,7 @@ def main(argv: list[str] | None = None) -> None:
             model, dataset, device=device, batch_size=args.batch_size, num_workers=args.num_workers
         )
         robustness = build_robustness_metrics_payload(
-            out_dir.name, evaluation, residual_closure=residual_closure
+            args.checkpoint.parent.name, evaluation, residual_closure=residual_closure
         )
         robustness["evaluation_provenance"] = {
             "checkpoint_path": str(args.checkpoint),
