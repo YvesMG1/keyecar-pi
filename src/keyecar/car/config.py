@@ -119,7 +119,7 @@ class TeleopSettings:
 
     deadzone: float = 0.12
     status_interval_s: float = 0.2
-    loop_delay_s: float = 0.02
+    loop_delay_s: float = 0.02  # between controller reads when not recording
     session_root: str = "recordings"
 
 
