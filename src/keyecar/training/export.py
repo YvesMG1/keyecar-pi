@@ -1,6 +1,6 @@
 """Export a training checkpoint as an ONNX bundle for the car.
 
-    python -m keyecar.training.export runs/rgb_history_dagger_v4/best.pt --out-dir models/rgb_history_dagger_v4
+    python -m keyecar.training.export runs/rgb_history_dagger_v5/best.pt --out-dir models/rgb_history_dagger_v5
 
 The bundle contains::
 
@@ -8,8 +8,9 @@ The bundle contains::
     policy.int8.onnx        # dynamic INT8 weight quantization (unless --no-int8)
     policy_metadata.json    # variant, preprocessing, and training provenance
 
-ONNX inputs: ``image`` (N, 3 * history, H, W), ``motor_state`` (N, 2),
-``condition`` (N,), and for history models ``condition_history`` (N, history).
+ONNX inputs: ``image`` (N, 3 * history, H, W), ``motor_state`` (N, 2; absent
+for policies trained with ``--no-motor-state``), ``condition`` (N,), and for
+history models ``condition_history`` (N, history).
 The output is (N, 2): throttle and steering. After export the ONNX model is
 checked against PyTorch on a random input.
 """
@@ -22,6 +23,7 @@ from pathlib import Path
 import numpy as np
 import onnxruntime as ort
 import torch
+import torch.nn as nn
 from onnxruntime.quantization import QuantType, quantize_dynamic
 
 from keyecar.cli import add_checkpoint, make_parser
@@ -31,14 +33,36 @@ from .files import write_json
 from .model import RegressionPolicy
 
 
+class _WithoutMotorState(nn.Module):
+    """A policy that ignores the previous command, with that input left out of the graph."""
+
+    def __init__(self, model: RegressionPolicy):
+        super().__init__()
+        self.model = model
+        # A new module starts in training mode. The exporter restores the mode it found,
+        # which would switch the wrapped policy back to training.
+        self.train(model.training)
+
+    def forward(
+        self, image: torch.Tensor, condition: torch.Tensor, condition_history: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        return self.model(image, None, condition, condition_history)
+
+
+def onnx_module(model: RegressionPolicy) -> nn.Module:
+    """The module whose arguments are exactly the ONNX inputs."""
+    return model if model.use_motor_state else _WithoutMotorState(model)
+
+
 def example_inputs(model: RegressionPolicy, image_size: int, seed: int = 0) -> dict[str, np.ndarray]:
-    """Random model inputs keyed by their ONNX input names, in the model's argument order."""
+    """Random inputs keyed by their ONNX input names, in the argument order of ``onnx_module``."""
     rng = np.random.default_rng(seed)
     inputs = {
-        "image": rng.standard_normal((1, model.input_channels, image_size, image_size)).astype(np.float32),
-        "motor_state": rng.standard_normal((1, 2)).astype(np.float32),
-        "condition": np.zeros(1, dtype=np.int64),
+        "image": rng.standard_normal((1, model.input_channels, image_size, image_size)).astype(np.float32)
     }
+    if model.use_motor_state:
+        inputs["motor_state"] = rng.standard_normal((1, 2)).astype(np.float32)
+    inputs["condition"] = np.zeros(1, dtype=np.int64)
     if model.condition_history_length > 0:
         inputs["condition_history"] = np.zeros((1, model.condition_history_length), dtype=np.int64)
     return inputs
@@ -48,7 +72,7 @@ def export_onnx(model: RegressionPolicy, output_path: Path, *, image_size: int) 
     model.eval()
     inputs = example_inputs(model, image_size)
     torch.onnx.export(
-        model,
+        onnx_module(model),
         tuple(torch.from_numpy(value) for value in inputs.values()),
         str(output_path),
         input_names=list(inputs),
@@ -61,9 +85,10 @@ def export_onnx(model: RegressionPolicy, output_path: Path, *, image_size: int) 
 
 def check_onnx_against_torch(model: RegressionPolicy, onnx_path: Path, *, image_size: int) -> float:
     """Return the largest output difference between ONNX Runtime and PyTorch."""
+    model.eval()
     inputs = example_inputs(model, image_size)
     with torch.no_grad():
-        expected = model(*(torch.from_numpy(value) for value in inputs.values())).numpy()
+        expected = onnx_module(model)(*(torch.from_numpy(value) for value in inputs.values())).numpy()
     session = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
     actual = session.run(None, inputs)[0]
     return float(np.max(np.abs(expected - actual)))

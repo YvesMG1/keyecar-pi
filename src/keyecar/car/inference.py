@@ -16,7 +16,7 @@ also used by the training dataset, so training and the car cannot drift apart.
 
 Benchmark on the Pi::
 
-    python -m keyecar.car.inference models/rgb_history_dagger_v4
+    python -m keyecar.car.inference models/rgb_history_dagger_v5
 """
 
 from __future__ import annotations
@@ -59,6 +59,7 @@ class PolicyMetadata:
     std: np.ndarray
     history_length: int
     condition_history_length: int
+    use_motor_state: bool
 
     @classmethod
     def from_file(cls, path: str | Path) -> PolicyMetadata:
@@ -75,6 +76,8 @@ class PolicyMetadata:
             std=np.array(data["imagenet_std"], dtype=np.float32).reshape(3, 1, 1),
             history_length=history_length,
             condition_history_length=int(model_config["condition_history_length"]),
+            # Bundles from before the option existed always take the previous command.
+            use_motor_state=bool(model_config.get("use_motor_state", True)),
         )
 
 
@@ -182,6 +185,7 @@ class PolicyRunner:
         """Return the policy command for one frame.
 
         ``motor_state`` is the (throttle, steering) executed on the previous tick.
+        Policies trained without it have no such input, and it is ignored.
         """
         self.last_diagnostics = None
         timestamp_ns = time.monotonic_ns()
@@ -189,9 +193,10 @@ class PolicyRunner:
         self._push(image, condition)
         feed = {
             "image": np.concatenate(self._frames, axis=0)[None],
-            "motor_state": np.array([motor_state], dtype=np.float32),
             "condition": np.array([int(condition)], dtype=np.int64),
         }
+        if self.metadata.use_motor_state:
+            feed["motor_state"] = np.array([motor_state], dtype=np.float32)
         if self.metadata.condition_history_length > 0:
             feed["condition_history"] = np.array([self._conditions], dtype=np.int64)
 
