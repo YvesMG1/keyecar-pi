@@ -1,6 +1,6 @@
 """Drive autonomously with an exported policy; the operator can take over any time.
 
-    keyecar-drive --model models/rgb_history_dagger_v4 --track 7
+    keyecar-drive --model models/rgb_history_dagger_v5 --track 7
 
 The PlayStation controller stays connected: any left-stick deflection takes
 manual control until the stick is released, and those takeovers are recorded as
@@ -22,7 +22,7 @@ from .runtime import run_autonomy_loop
 def build_parser() -> argparse.ArgumentParser:
     parser = make_parser(__doc__, prog="keyecar-drive")
     parser.add_argument(
-        "--model", default="models/rgb_history_dagger_v4", help="policy bundle folder or .onnx file"
+        "--model", default="models/rgb_history_dagger_v5", help="policy bundle folder or .onnx file"
     )
     parser.add_argument("--int8", action="store_true", help="load policy.int8.onnx from the bundle")
     parser.add_argument(
