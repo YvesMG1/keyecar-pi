@@ -8,7 +8,9 @@ one correction session that is left out of training.
 Unless stated otherwise, each model gets its own last output as the previous command, as on the car.
 Steering ranges from -1 to 1, so an error of 0.1 is 5% of the full range.
 
-The models have been evaluated offline only. They have not driven on the car yet.
+The four models are compared offline. The standard model has also driven on the car: one run of 2:09
+on a layout it never saw in training, with 1,710 frames, 4 left and 7 right route commands, and
+0 takeovers ([video](https://www.youtube.com/watch?v=Jv9juVpWOz4)).
 
 ## Steering and throttle
 
@@ -91,7 +93,8 @@ threads: about 5 ms for the network and about 9 ms for the whole frame (median).
 ## Limitations
 
 - These are offline numbers on images from my own drives, so an error cannot grow over time as it
-  does on the car. An on-track comparison, counting takeovers per minute, is still to do.
+  does on the car. An on-track comparison of the four models, counting takeovers per minute, is still
+  to do.
 - The validation set is small (4 sessions, 106 steering steps, 79 turns, one held-out correction
   session), and each model was trained once. Differences of 0.01 in steering error, 0.05 in gap
   closed, or 5 points in turns followed are within noise.
