@@ -17,7 +17,11 @@ mistake I took over, and those corrections became training data for the next rou
   <sub>Autonomous run on a newspaper track, with an earlier model. The badge shows the route command I gave with the controller.</sub>
 </p>
 
-> **Video:** a full-length driving video will be added soon.
+<p align="center">
+  <a href="https://www.youtube.com/watch?v=Jv9juVpWOz4"><img src="https://img.youtube.com/vi/Jv9juVpWOz4/maxresdefault.jpg" width="480" alt="DIY Self-Driving RC Car – End-to-End Imitation Learning (YouTube)"></a>
+  <br>
+  <sub>Full run on YouTube: the standard model drives a layout it never saw in training, in real time, with 0 takeovers.</sub>
+</p>
 
 ## How I built it
 
@@ -59,8 +63,10 @@ output fed back as on the car:
 | Whole turns followed | 77% | 84% | 81% | **89%** |
 | Corrections from a held-out session, gap closed | 0.44 | 0.47 | 0.42 | 0.46 |
 
-The models have been evaluated offline only and have not driven on the car yet. `keyecar-drive`
-defaults to the standard one. See [docs/results.md](docs/results.md) for all numbers and how they
+The four-model comparison is offline. The standard model has also driven on the car. In the
+[video](https://www.youtube.com/watch?v=Jv9juVpWOz4) it drives for 2:09 on a layout it never saw
+in training, follows 4 left and 7 right route commands over 1,710 frames, and needs 0 takeovers.
+`keyecar-drive` defaults to it. See [docs/results.md](docs/results.md) for all numbers and how they
 are measured.
 
 ## Limitations and future work
@@ -68,9 +74,9 @@ are measured.
 This is a first version. The main open points are on the learning side.
 
 **Evaluation**
-- **Not yet compared on the track.** All numbers are offline, on images from my own drives, where an
-  error cannot grow over time as it does on the car. Counting takeovers per minute for each model is
-  the next step.
+- **Not yet compared on the track.** The four models are compared offline, on images from my own
+  drives, where an error cannot grow over time as it does on the car. Only the standard model has a
+  recorded run on the car. Counting takeovers per minute for each model is the next step.
 
 **Model**
 - **Global pooling loses position.** The image features are averaged over the whole frame, so the
